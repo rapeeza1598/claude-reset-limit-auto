@@ -1,0 +1,37 @@
+name: Update supercronic version
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get latest supercronic release
+        id: latest
+        run: |
+          version=$(curl -fsSL https://api.github.com/repos/aptible/supercronic/releases/latest | jq -r .tag_name)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Bump ARG in Dockerfile
+        run: |
+          sed -i "s/^ARG SUPERCRONIC_VERSION=.*/ARG SUPERCRONIC_VERSION=${{ steps.latest.outputs.version }}/" Dockerfile
+
+      - name: Verify the image still builds with the new version
+        run: docker build .
+
+      - name: Open PR if version changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "Bump supercronic to ${{ steps.latest.outputs.version }}"
+          title: "Bump supercronic to ${{ steps.latest.outputs.version }}"
+          branch: bump-supercronic-version
+          delete-branch: true
