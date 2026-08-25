@@ -1,5 +1,7 @@
 # claude-reset-limit-auto
 
+[![CI](https://github.com/rapeeza1598/claude-reset-limit-auto/actions/workflows/ci.yml/badge.svg)](https://github.com/rapeeza1598/claude-reset-limit-auto/actions/workflows/ci.yml)
+
 Docker container ที่ยิง prompt สั้นๆ ไปหา Claude (ผ่าน Claude Code CLI) ตามเวลาที่กำหนดทุกวัน เพื่อให้ usage limit แบบ rolling 5 ชั่วโมงของ subscription (Pro/Max) รีเซ็ตตรงตามเวลาที่คาดเดาได้ แทนที่จะขึ้นอยู่กับว่าเราบังเอิญเริ่มคุยกับ Claude ตอนไหน
 
 **เวลาที่ยิง (Asia/Bangkok):** 06:00, 11:00, 16:00, 21:00 — ห่างกันครั้งละ 5 ชั่วโมงพอดี
