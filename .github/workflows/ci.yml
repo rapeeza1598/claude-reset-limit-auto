@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+          cache: false
       - run: go vet ./...
       - run: go test ./...
       - run: docker build .
