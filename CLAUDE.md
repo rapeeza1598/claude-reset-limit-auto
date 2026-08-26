@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Docker container that pings the Claude Code CLI on a schedule (default 06:00/11:00/16:00/21:00 Asia/Bangkok, each 5h apart) so the Claude.ai/Claude Code **subscription**'s rolling 5-hour usage window resets at predictable times instead of drifting with whenever the user happens to start working.
+A Docker container that pings the Claude Code CLI on a schedule (default 06:00/11:00/16:00/21:00 Asia/Bangkok — 5h apart except the 21:00→06:00 overnight gap, which is 9h) so the Claude.ai/Claude Code **subscription**'s rolling 5-hour usage window resets at predictable times instead of drifting with whenever the user happens to start working. The ping is a no-op if the user was already active during that window — it can't detect or override real rate-limit state, it just guarantees *a* window starts at the scheduled hour.
 
 ## Commands
 
@@ -18,7 +18,9 @@ A Docker container that pings the Claude Code CLI on a schedule (default 06:00/1
 - `docker compose run --rm claude-reset <cmd>` — one-off container for debugging (`entrypoint.sh` honors the passed command instead of starting the real service — see Architecture)
 - `docker compose logs -f` — tail supercronic's + the reset binary's combined JSON logs
 
-CI (`.github/workflows/ci.yml`) runs `go vet`, `go test`, and `docker build .` on every push/PR to `main` — same commands as above, no registry publish step, nothing else to configure there.
+CI (`.github/workflows/ci.yml`) runs `go vet`, `go test ./...`, and a bare `docker build .` (not the compose wrapper) on every push/PR to `main` — no registry publish step, nothing else to configure there.
+
+A second workflow (`.github/workflows/update-supercronic.yml`) bumps `SUPERCRONIC_VERSION` in the Dockerfile weekly via PR — Dependabot's Docker ecosystem only tracks `FROM` lines, not `ARG`s, hence the separate workflow.
 
 ## Required setup before running
 
@@ -26,7 +28,7 @@ CI (`.github/workflows/ci.yml`) runs `go vet`, `go test`, and `docker build .` o
 
 ## Architecture
 
-**`main.go`** (stdlib only, no third-party deps) is the check-then-ping-then-log logic, invoked once per cron firing:
+**`main.go`** (stdlib only, no third-party deps) is the check-then-ping-then-log logic, invoked once per cron firing. It hardcodes `/data/last_slot` and `/data/reset.log`, so the compiled binary can't be run standalone outside the container (`go build -o /tmp/reset . && /tmp/reset` fails opening the log file unless `/data` exists and is writable) — `go test ./...` is the way to exercise the logic locally.
 - Computes an hour-granularity slot key (`YYYY-MM-DD_HH`) and compares it against `/data/last_slot` — if that slot was already pinged, logs a "skip" entry and exits. The comparison itself is factored into `shouldPing()` so it's unit-testable without touching the filesystem or spawning a process.
 - Otherwise shells out to `claude -p "hi"` (inherits the container's environment, including the OAuth token) and only writes the state file on success — a failed ping (bad/expired token, network error) is left for retry at the next scheduled slot rather than marked done.
 - Logs every run as JSON (`log/slog`) to both stdout and `/data/reset.log`, so history survives container recreation via the `/data` volume.
@@ -38,4 +40,8 @@ CI (`.github/workflows/ci.yml`) runs `go vet`, `go test`, and `docker build .` o
 
 **No system cron.** The container runs [`supercronic`](https://github.com/aptible/supercronic) instead — it needs no root (system cron requires root to write `/etc/cron.d` and manage per-job privilege-dropping), and spawned jobs inherit its process environment directly, so no `/etc/environment`-passthrough hack is needed either.
 
-**`entrypoint.sh`** regenerates `/app/crontab` from the `RESET_HOURS` env var on every container start (so schedule changes only need `docker compose restart`, never a rebuild), then execs `supercronic /app/crontab` — unless arguments were passed to the container (`docker compose run claude-reset <cmd>`), in which case it execs those instead, so ad-hoc debugging doesn't accidentally spin up a second long-running instance of the real service.
+**`entrypoint.sh`** regenerates `/app/crontab` from the `RESET_HOURS` env var (comma-separated hours, 0-23, unvalidated — a malformed value produces a broken crontab rather than an error) on every container start (so schedule changes only need `docker compose restart`, never a rebuild), then execs `supercronic /app/crontab` — unless arguments were passed to the container (`docker compose run claude-reset <cmd>`), in which case it execs those instead, so ad-hoc debugging doesn't accidentally spin up a second long-running instance of the real service.
+
+## Non-goals
+
+No token renewal/rotation, no log rotation, no failure alerting, no real rate-limit introspection (the state file only tracks "did we already ping this hour," not actual usage) — all deliberate per the README's scope-cuts section. Don't propose adding these unless asked.

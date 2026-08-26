@@ -1,144 +1,146 @@
+**English** | [ภาษาไทย](i18n/README.th.md)
+
 # claude-reset-limit-auto
 
 [![CI](https://github.com/rapeeza1598/claude-reset-limit-auto/actions/workflows/ci.yml/badge.svg)](https://github.com/rapeeza1598/claude-reset-limit-auto/actions/workflows/ci.yml)
 
-Docker container ที่ยิง prompt สั้นๆ ไปหา Claude (ผ่าน Claude Code CLI) ตามเวลาที่กำหนดทุกวัน เพื่อให้ usage limit แบบ rolling 5 ชั่วโมงของ subscription (Pro/Max) รีเซ็ตตรงตามเวลาที่คาดเดาได้ แทนที่จะขึ้นอยู่กับว่าเราบังเอิญเริ่มคุยกับ Claude ตอนไหน
+A Docker container that fires a short prompt at Claude (via the Claude Code CLI) on a daily schedule, so your subscription's (Pro/Max) rolling 5-hour usage limit resets at predictable times — instead of depending on whenever you happen to start chatting with Claude.
 
-**เวลาที่ยิง (Asia/Bangkok):** 06:00, 11:00, 16:00, 21:00 — ห่างกันครั้งละ 5 ชั่วโมงพอดี
+**Ping times (Asia/Bangkok):** 06:00, 11:00, 16:00, 21:00 — 5 hours apart, except the 21:00→06:00 overnight gap, which is 9 hours.
 
-ก่อนยิงทุกครั้ง จะเช็คก่อนว่า "ช่วงชั่วโมงนี้" เคยยิงไปแล้วหรือยัง (ผ่าน state file) ถ้ายิงไปแล้วจะข้าม ไม่ยิงซ้ำ
+Before every ping, it checks whether "this hour slot" has already been pinged (via a state file). If so, it skips — no duplicate pings.
 
-## หลักการทำงาน (สำคัญ อ่านก่อนใช้)
+## How it works (important — read before using)
 
-- ใช้ **`CLAUDE_CODE_OAUTH_TOKEN`** (token อายุ 1 ปี ที่ผูกกับ subscription Pro/Max ของคุณ) — **ไม่ใช่** `ANTHROPIC_API_KEY`
-- เหตุผล: `ANTHROPIC_API_KEY` คือบัญชี Console แบบจ่ายตาม token แยกกันคนละก้อนกับ limit 5 ชั่วโมงที่เห็นใน Claude Code/claude.ai ถ้าใช้ API key จะยิงไปคนละบัญชี ไม่ช่วยรีเซ็ต limit ของ subscription เลย
-- ห้ามตั้งค่า `ANTHROPIC_API_KEY` ไว้ที่ไหนในโปรเจกต์นี้เด็ดขาด เพราะ Claude Code CLI จะเลือกใช้ `ANTHROPIC_API_KEY` ก่อน `CLAUDE_CODE_OAUTH_TOKEN` เสมอ (auth precedence) ถ้ามีทั้งคู่จะสลับไปยิงบัญชีผิดแบบเงียบๆ โดยไม่มี error ใดๆ
-- Container รันด้วย non-root user (`appuser`) — ใช้ [`supercronic`](https://github.com/aptible/supercronic) แทน system cron เพราะ supercronic ไม่ต้องการ root (รันเป็น foreground process ธรรมดา ไม่มีการ drop privilege แบบ cron ดั้งเดิมที่ต้องเขียน `/etc/cron.d`) และยังสืบทอด environment variable ของ container ได้ตรงๆ ไม่ต้องมี workaround ใดๆ
-- `curl`/`openssl`/`libcurl4` และ dependency สายรับรอง TLS ทั้งหมดที่ใช้ตอนโหลด Claude CLI ถูกแยกไปอยู่ใน build stage ต่างหาก (`installer`) ไม่ได้ติดตั้งอยู่ใน image ที่รันจริง — ลด attack surface / จำนวน CVE ของ image สุดท้ายลง
+- Uses **`CLAUDE_CODE_OAUTH_TOKEN`** (a 1-year token tied to your Pro/Max subscription) — **not** `ANTHROPIC_API_KEY`
+- Why: `ANTHROPIC_API_KEY` is a pay-per-token Console account, entirely separate from the 5-hour limit you see in Claude Code/claude.ai. Using an API key would ping the wrong account and do nothing to reset your subscription's limit.
+- **Never set `ANTHROPIC_API_KEY` anywhere in this project.** The Claude Code CLI always prefers `ANTHROPIC_API_KEY` over `CLAUDE_CODE_OAUTH_TOKEN` (auth precedence) — if both are present, it silently pings the wrong account with no error at all.
+- The container runs as a non-root user (`appuser`) — using [`supercronic`](https://github.com/aptible/supercronic) instead of system cron, since supercronic needs no root (it runs as a plain foreground process, with none of traditional cron's privilege-drop machinery that requires writing to `/etc/cron.d`) and inherits the container's environment variables directly, no workaround needed.
+- `curl`/`openssl`/`libcurl4` and the whole TLS dependency chain used to download the Claude CLI are isolated in a separate build stage (`installer`) and never installed in the image that actually runs — reducing attack surface / CVE count in the final image.
 
-## ข้อกำหนดเบื้องต้น (Prerequisites)
+## Prerequisites
 
 - Docker + Docker Compose
-- มี Claude Pro หรือ Max subscription และเคย `claude login` บนเครื่องที่จะรัน `claude setup-token` แล้ว (ไม่จำเป็นต้องเป็นเครื่องเดียวกับที่รัน container)
+- A Claude Pro or Max subscription, and `claude login` already done on the machine you'll run `claude setup-token` on (doesn't have to be the same machine that runs the container)
 
-## วิธีติดตั้ง (Setup)
+## Setup
 
-### 1. สร้าง long-lived token
+### 1. Generate a long-lived token
 
-รันคำสั่งนี้บนเครื่อง Mac ที่ login Claude Code ไว้แล้ว (เป็น interactive command จะเปิด browser ให้ authorize):
+Run this on a Mac already logged into Claude Code (it's an interactive command — it'll open a browser to authorize):
 
 ```bash
 claude setup-token
 ```
 
-จะได้ token พิมพ์ออกมาในเทอร์มินัล (ไม่มีการบันทึกไฟล์ให้อัตโนมัติ — ต้อง copy เก็บเอง) token นี้ใช้ได้ 1 ปี
+The token prints to the terminal (nothing is saved to a file automatically — copy it yourself). This token is valid for 1 year.
 
-### 2. ตั้งค่า environment
+### 2. Configure the environment
 
 ```bash
 cp .env.example .env
 ```
 
-เปิด `.env` แล้ววาง token ที่ได้ลงไปในบรรทัด:
+Open `.env` and paste your token into this line:
 
 ```
-CLAUDE_CODE_OAUTH_TOKEN=<วาง token ที่ copy มาตรงนี้>
+CLAUDE_CODE_OAUTH_TOKEN=<paste your copied token here>
 ```
 
-**อย่าเพิ่มบรรทัด `ANTHROPIC_API_KEY=` ลงในไฟล์นี้** (ดูเหตุผลด้านบน)
+**Do not add an `ANTHROPIC_API_KEY=` line to this file** (see why above).
 
-### 3. build และรัน container
+### 3. Build and run the container
 
 ```bash
 docker compose build
 docker compose up -d
 ```
 
-Container จะรันค้างไว้ (`restart: unless-stopped`) แล้ว cron ข้างในจะยิง `claude -p "hi"` ให้เองตามเวลา 06:00 / 11:00 / 16:00 / 21:00 (Asia/Bangkok) ทุกวัน
+The container stays running (`restart: unless-stopped`), and the cron inside it fires `claude -p "hi"` automatically at 06:00 / 11:00 / 16:00 / 21:00 (Asia/Bangkok) every day.
 
-## ตรวจสอบว่าติดตั้งถูกต้อง (Verification)
+## Verification
 
-ทำตามลำดับนี้หลัง build เสร็จครั้งแรก:
+Follow this sequence after the first build:
 
 ```bash
-# 1. เช็คว่า claude binary อยู่ใน PATH จริง
+# 1. Confirm the claude binary is actually on PATH
 docker compose exec claude-reset which claude
 
-# 2. เช็คว่า token เข้ามาถึง environment ของ container
+# 2. Confirm the token reaches the container's environment
 docker compose exec claude-reset printenv CLAUDE_CODE_OAUTH_TOKEN
 
-# 3. รัน reset ด้วยมือดูก่อนว่าทำงานได้จริง
+# 3. Run reset manually to confirm it actually works
 docker compose exec claude-reset /app/reset
-# ควรเห็น JSON log บรรทัดหนึ่ง เช่น {"level":"INFO","msg":"ping ok","slot":"...","duration_ms":...}
+# should see a JSON log line, e.g. {"level":"INFO","msg":"ping ok","slot":"...","duration_ms":...}
 
-# 4. รันซ้ำทันที ต้อง "skip" ไม่ยิงซ้ำ
+# 4. Run it again immediately — it must "skip", not ping again
 docker compose exec claude-reset /app/reset
-# ควรเห็น {"level":"INFO","msg":"skip","slot":"...","reason":"already pinged"}
+# should see {"level":"INFO","msg":"skip","slot":"...","reason":"already pinged"}
 
-# 5. เช็ค log ที่บันทึกไว้ถาวร (persist ข้าม restart เพราะอยู่บน volume)
+# 5. Check the persisted log (survives restarts since it's on a volume)
 cat data/reset.log
 
-# 6. เช็คว่ารันเป็น non-root จริง
+# 6. Confirm it's actually running as non-root
 docker compose exec claude-reset whoami
-# ควรได้ appuser ไม่ใช่ root
+# should be appuser, not root
 ```
 
-ถ้าขั้นตอนที่ 3 error เรื่อง auth (เช่น token หมดอายุ/ผิด) — state file จะไม่ถูกเขียน ทำให้ครั้งถัดไปสามารถลองยิงใหม่ได้ ไม่ค้างสถานะ "สำเร็จ" ปลอมๆ
+If step 3 errors on auth (e.g. an expired or invalid token), the state file won't be written, so the next scheduled slot will retry — it never gets stuck on a false "success" state.
 
-## แก้ไขตารางเวลา (schedule)
+## Changing the schedule
 
-เวลาที่ยิงตั้งค่าผ่าน `RESET_HOURS` ใน `.env` (ไม่ได้ hardcode ไว้ใน image) — container จะ generate cron schedule จากค่านี้ทุกครั้งที่เริ่มทำงาน
+Ping times are set via `RESET_HOURS` in `.env` (not hardcoded into the image) — the container regenerates the cron schedule from this value every time it starts.
 
 ```
 RESET_HOURS=6,11,16,21
 ```
 
-แก้ค่านี้ (ใส่ชั่วโมงคั่นด้วย comma, 0-23, เวลาไทย) แล้ว restart container — **ไม่ต้อง build ใหม่**:
+Edit this (comma-separated hours, 0-23, Thailand time) and restart the container — **no rebuild needed**:
 
 ```bash
 docker compose restart
 ```
 
-ตรวจสอบว่าค่าใหม่ถูกนำไปใช้จริง:
+Confirm the new value actually took effect:
 
 ```bash
 docker compose exec claude-reset cat /app/crontab
 ```
 
-## Log และ state file
+## Log and state file
 
-ทั้งสองไฟล์อยู่บน volume `./data` (mount จาก host) เพื่อให้อยู่รอดข้าม container restart/recreate:
+Both files live on the `./data` volume (mounted from the host) so they survive container restart/recreation:
 
-| ไฟล์             | ใช้ทำอะไร                                                                                 |
-| ---------------- | ----------------------------------------------------------------------------------------- |
-| `data/last_slot` | จำว่า "ช่วงชั่วโมงล่าสุด" (รูปแบบ `YYYY-MM-DD_HH`) ที่ยิงสำเร็จคือช่วงไหน — กันยิงซ้ำ     |
-| `data/reset.log` | log แบบ JSON บรรทัดต่อบรรทัด (JSON Lines) ทุกครั้งที่ script รัน ไม่ว่าจะยิงจริงหรือ skip |
+| File              | Purpose                                                                                     |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| `data/last_slot`  | Remembers the last hour slot (format `YYYY-MM-DD_HH`) that was pinged successfully — prevents duplicate pings |
+| `data/reset.log`  | Line-delimited JSON (JSON Lines) log of every run, whether it pinged or skipped              |
 
-ดู log แบบ real-time จาก container ได้ด้วย:
+You can also tail logs live from the container:
 
 ```bash
 docker compose logs -f
 ```
 
-## คำสั่งที่ใช้บ่อย
+## Common commands
 
 ```bash
-docker compose ps            # เช็คว่า container รันอยู่/ไม่ crash
-docker compose logs -f        # ดู log สด
-docker compose down           # หยุดและลบ container (data/ ยังอยู่)
-docker compose up -d --build  # build ใหม่แล้วรันใหม่ (เช่นหลังแก้โค้ด)
+docker compose ps            # check whether the container is running / not crashed
+docker compose logs -f        # follow logs live
+docker compose down           # stop and remove the container (data/ is untouched)
+docker compose up -d --build  # rebuild and rerun (e.g. after code changes)
 ```
 
-## แก้ปัญหาที่พบบ่อย (Troubleshooting)
+## Troubleshooting
 
-- **`which claude` ไม่เจอ binary** — install script ของ Claude Code อาจเปลี่ยนตำแหน่งติดตั้งในเวอร์ชันใหม่กว่านี้ ให้แก้บรรทัด `ENV PATH="/home/appuser/.local/bin:${PATH}"` ใน `Dockerfile` ให้ตรงกับตำแหน่งจริง แล้ว build ใหม่
-- **cron (supercronic) ยิงแต่ log ไม่มี `CLAUDE_CODE_OAUTH_TOKEN`** — ไม่ควรเกิดขึ้น เพราะ supercronic รันเป็น process ธรรมดา (ไม่ privilege-drop แบบ cron ดั้งเดิม) job ที่มันสั่งจะสืบทอด environment ของตัว container โดยตรงอยู่แล้ว ถ้าเจอปัญหานี้ให้เช็คว่า `.env` ถูกโหลดจริงด้วย `docker compose config`
-- **เวลาที่ยิงดูเลื่อนไปจากที่ตั้งไว้ (offset 7 ชั่วโมง)** — timezone ไม่ถูกต้อง เช็คด้วย `docker compose exec claude-reset date` ควรตรงกับเวลาไทยปัจจุบัน
-- **อยากทดสอบว่า cron ยิงจริงโดยไม่ต้องรอถึงเวลา** — แก้ `RESET_HOURS` ใน `.env` ชั่วคราวให้ตรงกับชั่วโมงถัดไป, `docker compose restart` (ไม่ต้อง build ใหม่), รอดู `docker compose logs -f`, แล้วอย่าลืมแก้กลับเป็น `6,11,16,21` ทีหลัง
+- **`which claude` can't find the binary** — the Claude Code install script may have changed its install location in a newer version. Update the `ENV PATH="/home/appuser/.local/bin:${PATH}"` line in `Dockerfile` to match the real location, then rebuild.
+- **cron (supercronic) fires but the log is missing `CLAUDE_CODE_OAUTH_TOKEN`** — shouldn't happen, since supercronic runs as a plain process (no privilege-drop like traditional cron) and its jobs inherit the container's environment directly. If you hit this, confirm `.env` is actually loaded with `docker compose config`.
+- **Ping times look shifted from what you set (7-hour offset)** — wrong timezone. Check with `docker compose exec claude-reset date`; it should match the current time in Thailand.
+- **Want to test that cron actually fires without waiting for the scheduled hour** — temporarily set `RESET_HOURS` in `.env` to the next upcoming hour, `docker compose restart` (no rebuild needed), watch `docker compose logs -f`, then don't forget to change it back to `6,11,16,21` afterward.
 
-## สิ่งที่ตั้งใจไม่ทำ (scope ที่ตัดออก)
+## Deliberately out of scope
 
-- ไม่มีการต่ออายุ/หมุนเวียน token อัตโนมัติ (token อายุ 1 ปี — ต้องรัน `claude setup-token` ใหม่เองก่อนหมดอายุ)
-- ไม่มี log rotation (log วันละ 4 บรรทัด JSON เล็กๆ กว่าจะเป็นไฟล์ใหญ่ใช้เวลาเป็นปี)
-- ไม่มีระบบแจ้งเตือนเมื่อยิงไม่สำเร็จ — ต้องเข้ามาดู `docker compose logs` หรือ `data/reset.log` เอง
-- การเช็คก่อนยิงเช็คแค่ "ยิงไปแล้วหรือยังในชั่วโมงนี้" (จาก state file ของตัวเอง) ไม่ได้เช็คสถานะ rate limit จริงจาก Claude — ถ้าใช้ Claude ตามปกติในช่วงนั้นอยู่แล้ว การยิงตามตารางอาจไม่มีผลอะไรเพิ่ม (เพราะ window เปิดอยู่แล้วจากการใช้งานจริง) แต่ก็ไม่เสียหายอะไรมากไปกว่าใช้ quota เล็กน้อย
+- No automatic token renewal/rotation (the token lasts 1 year — you need to run `claude setup-token` again yourself before it expires)
+- No log rotation (at ~4 small JSON lines a day, it'd take years to become a large file)
+- No alerting when a ping fails — you need to check `docker compose logs` or `data/reset.log` yourself
+- The pre-ping check only asks "have we already pinged this hour slot" (from its own state file) — it doesn't check Claude's actual rate-limit state. If you're already using Claude normally during that window, the scheduled ping may have no additional effect (since the window is already open from real usage) — but it doesn't cost anything beyond a small amount of quota either.
