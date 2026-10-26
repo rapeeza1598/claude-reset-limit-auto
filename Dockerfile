@@ -23,7 +23,7 @@ ARG TARGETARCH
 # not covered by Dependabot (its docker ecosystem only tracks FROM lines) —
 # auto-checked weekly and bumped via PR instead by
 # .github/workflows/update-supercronic.yml.
-ARG SUPERCRONIC_VERSION=v0.2.49
+ARG SUPERCRONIC_VERSION=v0.2.51
 RUN curl -fsSL -o /usr/local/bin/supercronic \
       "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
     && chmod +x /usr/local/bin/supercronic
