@@ -21,3 +21,10 @@ func TestShouldPing(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildCrontab(t *testing.T) {
+	want := "SHELL=/app/reset\n0 6,11,16,21 * * * /app/reset\n"
+	if got := buildCrontab("6,11,16,21"); got != want {
+		t.Errorf("buildCrontab(%q) = %q, want %q", "6,11,16,21", got, want)
+	}
+}
