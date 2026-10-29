@@ -17,6 +17,7 @@ Docker container ที่ยิง prompt สั้นๆ ไปหา Claude (
 - ห้ามตั้งค่า `ANTHROPIC_API_KEY` ไว้ที่ไหนในโปรเจกต์นี้เด็ดขาด เพราะ Claude Code CLI จะเลือกใช้ `ANTHROPIC_API_KEY` ก่อน `CLAUDE_CODE_OAUTH_TOKEN` เสมอ (auth precedence) ถ้ามีทั้งคู่จะสลับไปยิงบัญชีผิดแบบเงียบๆ โดยไม่มี error ใดๆ
 - Container รันด้วย non-root user (`appuser`) — ใช้ [`supercronic`](https://github.com/aptible/supercronic) แทน system cron เพราะ supercronic ไม่ต้องการ root (รันเป็น foreground process ธรรมดา ไม่มีการ drop privilege แบบ cron ดั้งเดิมที่ต้องเขียน `/etc/cron.d`) และยังสืบทอด environment variable ของ container ได้ตรงๆ ไม่ต้องมี workaround ใดๆ
 - `curl`/`openssl`/`libcurl4` และ dependency สายรับรอง TLS ทั้งหมดที่ใช้ตอนโหลด Claude CLI ถูกแยกไปอยู่ใน build stage ต่างหาก (`installer`) ไม่ได้ติดตั้งอยู่ใน image ที่รันจริง — ลด attack surface / จำนวน CVE ของ image สุดท้ายลง
+- Image ที่รันจริงเป็น [distroless](https://github.com/GoogleContainerTools/distroless) (`gcr.io/distroless/base-debian13`): **ไม่มี shell, ไม่มี package manager, ไม่มี coreutils** (`sh`, `cat`, `which`, `date` ฯลฯ ไม่มีอยู่ข้างใน) binary ที่ `docker compose exec` ได้มีแค่ `/app/reset`, `claude` และ `/usr/local/bin/supercronic` — คำสั่งตรวจสอบด้านล่างเขียนตามข้อจำกัดนี้
 
 ## ข้อกำหนดเบื้องต้น (Prerequisites)
 
@@ -64,10 +65,10 @@ Container จะรันค้างไว้ (`restart: unless-stopped`) แ�
 
 ```bash
 # 1. เช็คว่า claude binary อยู่ใน PATH จริง
-docker compose exec claude-reset which claude
+docker compose exec claude-reset claude --version
 
-# 2. เช็คว่า token เข้ามาถึง environment ของ container
-docker compose exec claude-reset printenv CLAUDE_CODE_OAUTH_TOKEN
+# 2. เช็คว่า .env ถูกโหลดจริง (ควรเห็น token ไม่ใช่ค่าว่าง)
+docker compose config | grep CLAUDE_CODE_OAUTH_TOKEN
 
 # 3. รัน reset ด้วยมือดูก่อนว่าทำงานได้จริง
 docker compose exec claude-reset /app/reset
@@ -81,8 +82,8 @@ docker compose exec claude-reset /app/reset
 cat data/reset.log
 
 # 6. เช็คว่ารันเป็น non-root จริง
-docker compose exec claude-reset whoami
-# ควรได้ appuser ไม่ใช่ root
+docker compose top
+# คอลัมน์ UID ควรเป็น 1000 (appuser) ไม่ใช่ root/0
 ```
 
 ถ้าขั้นตอนที่ 3 error เรื่อง auth (เช่น token หมดอายุ/ผิด) — state file จะไม่ถูกเขียน ทำให้ครั้งถัดไปสามารถลองยิงใหม่ได้ ไม่ค้างสถานะ "สำเร็จ" ปลอมๆ
@@ -104,7 +105,8 @@ docker compose restart
 ตรวจสอบว่าค่าใหม่ถูกนำไปใช้จริง:
 
 ```bash
-docker compose exec claude-reset cat /app/crontab
+docker compose cp claude-reset:/app/crontab - | tar -xO
+# ควรเห็น SHELL=/app/reset และ 0 <ชั่วโมงที่ตั้งไว้> * * * /app/reset
 ```
 
 ## Log และ state file
@@ -133,9 +135,9 @@ docker compose up -d --build  # build ใหม่แล้วรันใหม
 
 ## แก้ปัญหาที่พบบ่อย (Troubleshooting)
 
-- **`which claude` ไม่เจอ binary** — install script ของ Claude Code อาจเปลี่ยนตำแหน่งติดตั้งในเวอร์ชันใหม่กว่านี้ ให้แก้บรรทัด `ENV PATH="/home/appuser/.local/bin:${PATH}"` ใน `Dockerfile` ให้ตรงกับตำแหน่งจริง แล้ว build ใหม่
+- **`claude --version` ไม่เจอ binary** — install script ของ Claude Code อาจเปลี่ยนตำแหน่งติดตั้งในเวอร์ชันใหม่กว่านี้ ให้แก้บรรทัด `ENV PATH="/home/appuser/.local/bin:${PATH}"` ใน `Dockerfile` ให้ตรงกับตำแหน่งจริง แล้ว build ใหม่
 - **cron (supercronic) ยิงแต่ log ไม่มี `CLAUDE_CODE_OAUTH_TOKEN`** — ไม่ควรเกิดขึ้น เพราะ supercronic รันเป็น process ธรรมดา (ไม่ privilege-drop แบบ cron ดั้งเดิม) job ที่มันสั่งจะสืบทอด environment ของตัว container โดยตรงอยู่แล้ว ถ้าเจอปัญหานี้ให้เช็คว่า `.env` ถูกโหลดจริงด้วย `docker compose config`
-- **เวลาที่ยิงดูเลื่อนไปจากที่ตั้งไว้ (offset 7 ชั่วโมง)** — timezone ไม่ถูกต้อง เช็คด้วย `docker compose exec claude-reset date` ควรตรงกับเวลาไทยปัจจุบัน
+- **เวลาที่ยิงดูเลื่อนไปจากที่ตั้งไว้ (offset 7 ชั่วโมง)** — timezone ไม่ถูกต้อง ใน image ไม่มีคำสั่ง `date` ให้ดู field `time` ของบรรทัดใดก็ได้ใน `data/reset.log` หรือ `docker compose logs` แทน ควรลงท้ายด้วย `+07:00` และตรงกับเวลาไทยปัจจุบัน
 - **อยากทดสอบว่า cron ยิงจริงโดยไม่ต้องรอถึงเวลา** — แก้ `RESET_HOURS` ใน `.env` ชั่วคราวให้ตรงกับชั่วโมงถัดไป, `docker compose restart` (ไม่ต้อง build ใหม่), รอดู `docker compose logs -f`, แล้วอย่าลืมแก้กลับเป็น `6,11,16,21` ทีหลัง
 
 ## สิ่งที่ตั้งใจไม่ทำ (scope ที่ตัดออก)

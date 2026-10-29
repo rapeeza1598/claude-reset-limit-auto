@@ -17,6 +17,7 @@ Before every ping, it checks whether "this hour slot" has already been pinged (v
 - **Never set `ANTHROPIC_API_KEY` anywhere in this project.** The Claude Code CLI always prefers `ANTHROPIC_API_KEY` over `CLAUDE_CODE_OAUTH_TOKEN` (auth precedence) — if both are present, it silently pings the wrong account with no error at all.
 - The container runs as a non-root user (`appuser`) — using [`supercronic`](https://github.com/aptible/supercronic) instead of system cron, since supercronic needs no root (it runs as a plain foreground process, with none of traditional cron's privilege-drop machinery that requires writing to `/etc/cron.d`) and inherits the container's environment variables directly, no workaround needed.
 - `curl`/`openssl`/`libcurl4` and the whole TLS dependency chain used to download the Claude CLI are isolated in a separate build stage (`installer`) and never installed in the image that actually runs — reducing attack surface / CVE count in the final image.
+- The runtime image is [distroless](https://github.com/GoogleContainerTools/distroless) (`gcr.io/distroless/base-debian13`): **no shell, no package manager, no coreutils** (`sh`, `cat`, `which`, `date`, ... don't exist inside it). The only binaries you can `docker compose exec` are `/app/reset`, `claude`, and `/usr/local/bin/supercronic` — the verification commands below are written around that.
 
 ## Prerequisites
 
@@ -64,10 +65,10 @@ Follow this sequence after the first build:
 
 ```bash
 # 1. Confirm the claude binary is actually on PATH
-docker compose exec claude-reset which claude
+docker compose exec claude-reset claude --version
 
-# 2. Confirm the token reaches the container's environment
-docker compose exec claude-reset printenv CLAUDE_CODE_OAUTH_TOKEN
+# 2. Confirm .env is loaded (should print your token, not an empty value)
+docker compose config | grep CLAUDE_CODE_OAUTH_TOKEN
 
 # 3. Run reset manually to confirm it actually works
 docker compose exec claude-reset /app/reset
@@ -81,8 +82,8 @@ docker compose exec claude-reset /app/reset
 cat data/reset.log
 
 # 6. Confirm it's actually running as non-root
-docker compose exec claude-reset whoami
-# should be appuser, not root
+docker compose top
+# UID column should be 1000 (appuser), not root/0
 ```
 
 If step 3 errors on auth (e.g. an expired or invalid token), the state file won't be written, so the next scheduled slot will retry — it never gets stuck on a false "success" state.
@@ -104,7 +105,8 @@ docker compose restart
 Confirm the new value actually took effect:
 
 ```bash
-docker compose exec claude-reset cat /app/crontab
+docker compose cp claude-reset:/app/crontab - | tar -xO
+# should print SHELL=/app/reset and 0 <your hours> * * * /app/reset
 ```
 
 ## Log and state file
@@ -133,9 +135,9 @@ docker compose up -d --build  # rebuild and rerun (e.g. after code changes)
 
 ## Troubleshooting
 
-- **`which claude` can't find the binary** — the Claude Code install script may have changed its install location in a newer version. Update the `ENV PATH="/home/appuser/.local/bin:${PATH}"` line in `Dockerfile` to match the real location, then rebuild.
+- **`claude --version` can't find the binary** — the Claude Code install script may have changed its install location in a newer version. Update the `ENV PATH="/home/appuser/.local/bin:${PATH}"` line in `Dockerfile` to match the real location, then rebuild.
 - **cron (supercronic) fires but the log is missing `CLAUDE_CODE_OAUTH_TOKEN`** — shouldn't happen, since supercronic runs as a plain process (no privilege-drop like traditional cron) and its jobs inherit the container's environment directly. If you hit this, confirm `.env` is actually loaded with `docker compose config`.
-- **Ping times look shifted from what you set (7-hour offset)** — wrong timezone. Check with `docker compose exec claude-reset date`; it should match the current time in Thailand.
+- **Ping times look shifted from what you set (7-hour offset)** — wrong timezone. The image has no `date` command — check the `time` field of any line in `data/reset.log` or `docker compose logs` instead; it should end in `+07:00` and match the current time in Thailand.
 - **Want to test that cron actually fires without waiting for the scheduled hour** — temporarily set `RESET_HOURS` in `.env` to the next upcoming hour, `docker compose restart` (no rebuild needed), watch `docker compose logs -f`, then don't forget to change it back to `6,11,16,21` afterward.
 
 ## Deliberately out of scope
