@@ -102,6 +102,6 @@ Not yet run end to end: a real scheduled fire at minute 0. The command it runs i
 
 ## Open items (as of 2026-11-18)
 
-- **CodeQL default setup is still on.** It's a repo setting (Settings → Code security), not a workflow file, so it still tries to run on PRs and fails while the account is locked.
+- **CodeQL default setup was turned off on 2026-11-18.** It's a repo setting, not a workflow file, and it was failing on every PR while the account is locked. Once billing is fixed, turn it back on in Settings → Code security.
 - **The OAuth token expires one year after `claude setup-token`.** Nothing renews or alerts on it (out of scope). Run `claude setup-token` again before it expires and update `.env`.
 - **`RESET_HOURS` isn't validated** (see above).
