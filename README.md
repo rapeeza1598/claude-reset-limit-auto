@@ -66,7 +66,7 @@ Follow this sequence after the first build:
 docker compose exec claude-reset claude --version
 
 # 2. Confirm .env is loaded (should print your token, not an empty value)
-docker compose config | grep CLAUDE_CODE_OAUTH_TOKEN
+docker compose config | grep CLAUDE_CODE_OAUTH_TOKEN   # Windows: findstr instead of grep
 
 # 3. Run reset manually to confirm it actually works
 docker compose exec claude-reset /app/reset
@@ -86,6 +86,16 @@ docker compose top
 
 If step 3 errors on auth (e.g. an expired or invalid token), the state file won't be written, so the next scheduled slot will retry — it never gets stuck on a false "success" state.
 
+## Keeping the host awake
+
+The schedule only works while the machine is awake and Docker is running. When the host sleeps, Docker Desktop's VM (on Windows or Mac) is paused. On wake, supercronic immediately runs the job it missed. `/app/reset` skips any fire more than 10 minutes past a scheduled hour and logs `"reason":"late fire, host was probably asleep"`, because a late ping would start the 5-hour window at the wrong time. So a sleeping host misses that slot rather than pinging at a random hour.
+
+On **Windows**:
+- Settings → System → Power (& battery) → set sleep to **Never** when plugged in.
+- Docker Desktop → Settings → General → turn on **Start Docker Desktop when you sign in**. After a reboot (e.g. Windows Update), Docker only starts once someone signs in.
+
+On a **Mac**, turn off automatic sleep (System Settings → Energy / Battery) and keep Docker Desktop running. Or run it on an always-on machine (mini PC, NAS, Raspberry Pi, VPS).
+
 ## Changing the schedule
 
 Ping times are set via `RESET_HOURS` in `.env` (not hardcoded into the image) — the container regenerates the cron schedule from this value every time it starts.
@@ -103,8 +113,8 @@ docker compose restart
 Confirm the new value actually took effect:
 
 ```bash
-docker compose cp claude-reset:/app/crontab - | tar -xO
-# should print SHELL=/app/reset and 0 <your hours> * * * /app/reset
+docker compose logs claude-reset | grep "crontab written"   # Windows: findstr instead of grep
+# should show "hours":[6,11,16,21] (your hours), from the latest start
 ```
 
 ## Log and state file
@@ -133,6 +143,8 @@ docker compose up -d --build  # rebuild and rerun (e.g. after code changes)
 
 ## Troubleshooting
 
+- **Logs show `"reason":"late fire, host was probably asleep"`** — the machine was asleep (or Docker wasn't running) at the scheduled hour, so that slot was skipped. See [Keeping the host awake](#keeping-the-host-awake).
+- **Container keeps restarting with `invalid RESET_HOURS`** — the value in `.env` isn't a comma-separated list of hours 0-23. Fix it and run `docker compose up -d`.
 - **`claude --version` can't find the binary** — the Claude Code install script may have changed its install location in a newer version. Update the `ENV PATH="/home/appuser/.local/bin:${PATH}"` line in `Dockerfile` to match the real location, then rebuild.
 - **cron (supercronic) fires but the log is missing `CLAUDE_CODE_OAUTH_TOKEN`** — shouldn't happen, since supercronic runs as a plain process (no privilege-drop like traditional cron) and its jobs inherit the container's environment directly. If you hit this, confirm `.env` is actually loaded with `docker compose config`.
 - **Ping times look shifted from what you set (7-hour offset)** — wrong timezone. The image has no `date` command — check the `time` field of any line in `data/reset.log` or `docker compose logs` instead; it should end in `+07:00` and match the current time in Thailand.
