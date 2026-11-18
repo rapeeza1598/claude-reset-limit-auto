@@ -18,6 +18,7 @@ Last updated: 2026-11-18.
 | 2026-08-26 | README made English-primary; Thai moved to `i18n/README.th.md` | `25c35fc` |
 | 2026-10-30 | Runtime moves to distroless; `entrypoint.sh` replaced by `/app/reset -init`; supercronic v0.2.51 | PR #2 (`d3314bf`) |
 | 2026-11-18 | This knowledge base added; `go.mod` directive moved from 1.23 to 1.27; GitHub Actions workflows (CI, supercronic bump) and the CI badge removed | PR #3 |
+| 2026-11-18 | 5-minute ping timeout; slimmer ping (`--tools ""`, `--no-session-persistence`); supercronic `-json -passthrough-logs`; CLI nonessential traffic off; `cap_drop: ALL` + `no-new-privileges`; `.dockerignore` | `reliability-hardening` branch |
 
 ## Design decisions
 
@@ -47,6 +48,12 @@ Last updated: 2026-11-18.
 - **`entrypoint.sh` replaced:** `-init` regenerates the crontab from `RESET_HOURS` on every start, then execs supercronic. If extra args are passed (`docker compose run … <cmd>`), it execs those instead.
 - **No `mkdir`/`chown` in the final stage:** `/app` and `/data` are created and chowned in the installer stage, then copied as whole directories. `COPY --chown` applies only to the copied files, not to parent directories it creates along the way.
 
+### Ping hardening (2026-11-18)
+- **Timeout:** `claude -p` gets 5 minutes. supercronic never starts a job while the previous run is still going, so a hung ping would silently block every later slot. `cmd.WaitDelay` stops leftover child processes from holding `Wait` open past the timeout.
+- **Smaller ping:** `--tools ""` drops the tool definitions from the prompt, and `--no-session-persistence` skips writing a session file. The model is unchanged (see open items).
+- **Logs:** supercronic runs with `-json -passthrough-logs`. Before this, its log lines were plain text and the job's JSON was escaped inside its `msg` field.
+- **Container:** `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (no autoupdater or telemetry), `cap_drop: [ALL]` and `no-new-privileges` in compose. `.dockerignore` keeps `.env` (the token), `data/` and `.git` out of the build context.
+
 ### Schedule comes from `RESET_HOURS` at runtime
 - **Decision:** the crontab is generated at container start, not baked into the image.
 - **Why:** changing the schedule needs only `docker compose restart`, with no rebuild.
@@ -73,6 +80,8 @@ Last updated: 2026-11-18.
   | `exec … cat /app/crontab` | `docker compose cp claude-reset:/app/crontab - \| tar -xO` |
   | `exec … date` | the `time` field in `data/reset.log` should end in `+07:00` |
 
+- **Never pass `--bare` to `claude`.** Its help text says it reads only `ANTHROPIC_API_KEY` (or an `apiKeyHelper`), never OAuth, so every ping would fail.
+- **A sleeping host makes pings fire late.** When the Docker VM is paused (Mac asleep), supercronic runs the overdue job as soon as it wakes. Logs from 2026-09-09 to 09-27 show 9 cron fires: 5 in the wrong hour (23:10, 14:18, 12:01, 10:51, 17:08) and 1 that was 43 minutes late, with supercronic logging `job took too long to run: it should have started 65h10m45s ago`. A late ping starts the window at the wrong time and can turn the next scheduled ping into a no-op.
 - **Local Docker builds can be slow or flaky.** This machine's network is unreliable for large layer downloads. Retry before assuming a real bug; the layer cache makes retries cheap. Docker Desktop may also need starting first (`open -a Docker`).
 
 ## Safe test recipes
@@ -103,5 +112,7 @@ Not yet run end to end: a real scheduled fire at minute 0. The command it runs i
 ## Open items (as of 2026-11-18)
 
 - **CodeQL default setup was turned off on 2026-11-18.** It's a repo setting, not a workflow file, and it was failing on every PR while the account is locked. Once billing is fixed, turn it back on in Settings → Code security.
+- **Skip late fires (not done yet).** `runPing` should ping only when the current hour is in `RESET_HOURS` and the minute is below about 10, and log a skip otherwise. Parsing `RESET_HOURS` for this would also validate it. Separately, run the service on an always-on host.
+- **Smaller model for the ping (not done yet).** `--model haiku` is accepted by CLI 2.1.327. Confirm with one real ping at a scheduled hour that it starts the 5-hour window before switching.
 - **The OAuth token expires one year after `claude setup-token`.** Nothing renews or alerts on it (out of scope). Run `claude setup-token` again before it expires and update `.env`.
 - **`RESET_HOURS` isn't validated** (see above).
