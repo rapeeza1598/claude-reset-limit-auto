@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,9 @@ const (
 	crontabPath    = "/app/crontab"
 	supercronicBin = "/usr/local/bin/supercronic"
 	defaultHours   = "6,11,16,21"
+	// supercronic never overlaps runs of a job, so a hung ping would block
+	// every later slot until the container restarts.
+	pingTimeout = 5 * time.Minute
 )
 
 func shouldPing(lastSlot, key string) bool {
@@ -74,7 +78,10 @@ func runInit(logger *slog.Logger, debugArgs []string) {
 		os.Exit(1)
 	}
 
-	execOrExit(logger, supercronicBin, []string{supercronicBin, crontabPath})
+	// -passthrough-logs keeps the job's JSON lines intact (otherwise they're
+	// escaped inside supercronic's own msg field); -json makes its own lines
+	// JSON too, so `docker compose logs` is one format.
+	execOrExit(logger, supercronicBin, []string{supercronicBin, "-json", "-passthrough-logs", crontabPath})
 }
 
 // runShellCommand stands in for "sh -c <command>" — supercronic runs every
@@ -112,10 +119,22 @@ func runPing(logger *slog.Logger) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+
 	start := time.Now()
-	cmd := exec.Command("claude", "-p", "hi")
+	// --tools "" and --no-session-persistence keep the ping small: no tool
+	// definitions in the prompt, no session file written. Never add --bare:
+	// it ignores CLAUDE_CODE_OAUTH_TOKEN entirely.
+	cmd := exec.CommandContext(ctx, "claude", "-p", "hi", "--tools", "", "--no-session-persistence")
+	// claude may leave children holding the output pipe after a kill;
+	// don't let that stall Wait past the timeout.
+	cmd.WaitDelay = 10 * time.Second
 	output, err := cmd.CombinedOutput()
 	duration := time.Since(start)
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err() // "context deadline exceeded" beats "signal: killed"
+	}
 
 	if err != nil {
 		logger.Error("ping failed", "slot", key, "duration_ms", duration.Milliseconds(), "error", err.Error(), "output", string(output))

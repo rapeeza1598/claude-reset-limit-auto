@@ -56,6 +56,8 @@ COPY --from=installer /usr/local/bin/supercronic /usr/local/bin/supercronic
 COPY --chmod=755 --from=builder /reset-bin /app/reset
 
 ENV TZ=Asia/Bangkok
+# no autoupdater, telemetry or error reporting from the CLI inside the container
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 ENV PATH="/home/appuser/.local/bin:${PATH}"
 
 USER appuser
