@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Docker container that pings the Claude Code CLI on a schedule (default 06:00/11:00/16:00/21:00 Asia/Bangkok — 5h apart except the 21:00→06:00 overnight gap, which is 9h) so the Claude.ai/Claude Code **subscription**'s rolling 5-hour usage window resets at predictable times instead of drifting with whenever the user happens to start working. The ping is a no-op if the user was already active during that window — it can't detect or override real rate-limit state, it just guarantees *a* window starts at the scheduled hour.
 
+`docs/knowledge-base.md` holds the decision log, lessons learned, safe test recipes (never test with a real ping), and open items. Read it before changing the Dockerfile or the exec/cron path, and update it when you make a decision worth remembering.
+
 ## Commands
 
 - `go build -o /tmp/reset .` — compile the Go binary locally
@@ -18,9 +20,7 @@ A Docker container that pings the Claude Code CLI on a schedule (default 06:00/1
 - `docker compose run --rm claude-reset <cmd>` — one-off container for debugging (`/app/reset -init` honors extra args by exec'ing them instead of starting the real service — see Architecture)
 - `docker compose logs -f` — tail supercronic's + the reset binary's combined JSON logs
 
-CI (`.github/workflows/ci.yml`) runs `go vet`, `go test ./...`, and a bare `docker build .` (not the compose wrapper) on every push/PR to `main` — no registry publish step, nothing else to configure there.
-
-A second workflow (`.github/workflows/update-supercronic.yml`) bumps `SUPERCRONIC_VERSION` in the Dockerfile weekly via PR — Dependabot's Docker ecosystem only tracks `FROM` lines, not `ARG`s, hence the separate workflow.
+No CI: the GitHub Actions workflows were removed on 2026-11-18 (see `docs/knowledge-base.md`). Run `go vet ./...`, `go test ./...`, and `docker build .` locally before pushing. `SUPERCRONIC_VERSION` in the Dockerfile is a manual pin, since Dependabot's Docker ecosystem only tracks `FROM` lines, not `ARG`s.
 
 ## Required setup before running
 

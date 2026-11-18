@@ -22,9 +22,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
-# not covered by Dependabot (its docker ecosystem only tracks FROM lines) —
-# auto-checked weekly and bumped via PR instead by
-# .github/workflows/update-supercronic.yml.
+# manual pin: Dependabot's docker ecosystem only tracks FROM lines, not ARGs.
+# Check https://github.com/aptible/supercronic/releases and bump by hand.
 ARG SUPERCRONIC_VERSION=v0.2.51
 RUN curl -fsSL -o /usr/local/bin/supercronic \
       "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
