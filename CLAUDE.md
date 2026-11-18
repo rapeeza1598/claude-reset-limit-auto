@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Docker container that pings the Claude Code CLI on a schedule (default 06:00/11:00/16:00/21:00 Asia/Bangkok — 5h apart except the 21:00→06:00 overnight gap, which is 9h) so the Claude.ai/Claude Code **subscription**'s rolling 5-hour usage window resets at predictable times instead of drifting with whenever the user happens to start working. The ping is a no-op if the user was already active during that window — it can't detect or override real rate-limit state, it just guarantees *a* window starts at the scheduled hour.
 
+`docs/knowledge-base.md` holds the decision log, lessons learned, safe test recipes (never test with a real ping), and open items. Read it before changing the Dockerfile or the exec/cron path, and update it when you make a decision worth remembering.
+
 ## Commands
 
 - `go build -o /tmp/reset .` — compile the Go binary locally
