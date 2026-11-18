@@ -2,8 +2,6 @@
 
 # claude-reset-limit-auto
 
-[![CI](https://github.com/rapeeza1598/claude-reset-limit-auto/actions/workflows/ci.yml/badge.svg)](https://github.com/rapeeza1598/claude-reset-limit-auto/actions/workflows/ci.yml)
-
 A Docker container that fires a short prompt at Claude (via the Claude Code CLI) on a daily schedule, so your subscription's (Pro/Max) rolling 5-hour usage limit resets at predictable times — instead of depending on whenever you happen to start chatting with Claude.
 
 **Ping times (Asia/Bangkok):** 06:00, 11:00, 16:00, 21:00 — 5 hours apart, except the 21:00→06:00 overnight gap, which is 9 hours.

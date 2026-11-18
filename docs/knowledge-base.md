@@ -17,7 +17,7 @@ Last updated: 2026-11-18.
 | 2026-08-25 | Weekly workflow that bumps `SUPERCRONIC_VERSION` | `b3ff56c`, `eae3775` |
 | 2026-08-26 | README made English-primary; Thai moved to `i18n/README.th.md` | `25c35fc` |
 | 2026-10-30 | Runtime moves to distroless; `entrypoint.sh` replaced by `/app/reset -init`; supercronic v0.2.51 | PR #2 (`d3314bf`) |
-| 2026-11-18 | This knowledge base added; `go.mod` directive moved from 1.23 to 1.27. Actions (major tags) and supercronic were already current | PR #3 |
+| 2026-11-18 | This knowledge base added; `go.mod` directive moved from 1.23 to 1.27; GitHub Actions workflows (CI, supercronic bump) and the CI badge removed | PR #3 |
 
 ## Design decisions
 
@@ -52,10 +52,11 @@ Last updated: 2026-11-18.
 - **Why:** changing the schedule needs only `docker compose restart`, with no rebuild.
 - **Limit:** the value isn't validated. A malformed value produces a broken crontab, not an error.
 
-### CI and dependency updates
-- CI only builds; nothing is published. Nothing pulls this image from a registry, so no registry secrets are needed.
-- `setup-go` has `cache: false`. The project is stdlib-only with no `go.sum`, so the cache step only produced a noisy annotation.
-- Dependabot handles GitHub Actions and Docker `FROM` lines. It can't track the `ARG SUPERCRONIC_VERSION`, so `.github/workflows/update-supercronic.yml` checks it weekly. That workflow runs `docker build` itself because PRs opened with the default `GITHUB_TOKEN` don't trigger `ci.yml` (GitHub's loop prevention).
+### No CI (workflows removed 2026-11-18)
+- **Decision:** delete `.github/workflows/ci.yml` and `update-supercronic.yml`, the README badge, and Dependabot's `github-actions` entry.
+- **Why:** from 2026-11-09 no Actions job started on this account ("The job was not started because your account is locked due to a billing issue"). Other repos on the account were hit too, so this wasn't a problem with this repo's config. The bump workflow also couldn't open PRs, because the repo setting allowing Actions to create PRs was off.
+- **Instead:** run `go vet ./...`, `go test ./...` and `docker build .` locally before pushing, and bump `ARG SUPERCRONIC_VERSION` by hand from the [supercronic releases](https://github.com/aptible/supercronic/releases). Dependabot still watches the Docker `FROM` lines.
+- **If CI comes back:** restore the files from git history (`git show 50d366f:.github/workflows/ci.yml`). Two details worth keeping: `setup-go` needs `cache: false` because the project has no `go.sum`, and the bump workflow runs `docker build` itself because PRs opened with the default `GITHUB_TOKEN` don't trigger other workflows.
 - `.gitattributes` forces LF. It was added when `entrypoint.sh` existed: a CRLF checkout on Windows broke its shebang and crash-looped the container. There are no shell scripts now, but the rule is harmless to keep.
 
 ## Lessons and gotchas
@@ -101,7 +102,6 @@ Not yet run end to end: a real scheduled fire at minute 0. The command it runs i
 
 ## Open items (as of 2026-11-18)
 
-- **GitHub Actions jobs aren't starting.** The scheduled runs on 2026-11-09 and 2026-11-16 failed with "The job was not started because your account is locked due to a billing issue." Fix the billing in the GitHub account settings. Until then, neither CI nor the supercronic bump workflow runs.
-- **The bump workflow can't open PRs.** The repo setting is off (`can_approve_pull_request_reviews: false`). Turn on Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
+- **CodeQL default setup is still on.** It's a repo setting (Settings → Code security), not a workflow file, so it still tries to run on PRs and fails while the account is locked.
 - **The OAuth token expires one year after `claude setup-token`.** Nothing renews or alerts on it (out of scope). Run `claude setup-token` again before it expires and update `.env`.
 - **`RESET_HOURS` isn't validated** (see above).
