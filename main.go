@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,16 +24,64 @@ const (
 	// supercronic never overlaps runs of a job, so a hung ping would block
 	// every later slot until the container restarts.
 	pingTimeout = 5 * time.Minute
+	// a scheduled fire later than this past the hour is skipped, see onTime
+	lateGrace = 10 * time.Minute
+	// a fire this close before an hour belongs to that hour, see slotStart
+	earlyGrace = time.Minute
 )
 
 func shouldPing(lastSlot, key string) bool {
 	return lastSlot != key
 }
 
+// slotStart returns the hour a run belongs to. On the Windows host (Docker
+// Desktop, WSL2) supercronic routinely fires 1-3s before the hour, e.g.
+// 10:59:57 for the 11:00 job, so a run within earlyGrace of the next hour
+// counts toward that hour.
+func slotStart(now time.Time) time.Time {
+	t := now.Add(earlyGrace)
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
+}
+
+// onTime reports whether a cron fire at now is close enough to a scheduled
+// hour to ping. When the host sleeps (Docker's VM on Mac or Windows gets
+// paused), supercronic runs the overdue job on wake, hours late, and a late
+// ping would start the 5-hour window at the wrong time.
+func onTime(now time.Time, hours []int) bool {
+	slot := slotStart(now)
+	return slices.Contains(hours, slot.Hour()) && now.Sub(slot) < lateGrace
+}
+
+// parseHours validates RESET_HOURS ("6,11,16,21"). Before this, a bad value
+// silently produced a broken crontab.
+func parseHours(s string) ([]int, error) {
+	var hours []int
+	for _, f := range strings.Split(s, ",") {
+		h, err := strconv.Atoi(strings.TrimSpace(f))
+		if err != nil || h < 0 || h > 23 {
+			return nil, fmt.Errorf("RESET_HOURS: %q is not an hour 0-23", f)
+		}
+		hours = append(hours, h)
+	}
+	return hours, nil
+}
+
+func resetHours() string {
+	if h := os.Getenv("RESET_HOURS"); h != "" {
+		return h
+	}
+	return defaultHours
+}
+
 // buildCrontab is what -init writes to crontabPath. The SHELL= line points
 // supercronic at this binary instead of /bin/sh — see runShellCommand.
-func buildCrontab(hours string) string {
-	return fmt.Sprintf("SHELL=%s\n0 %s * * * %s\n", binPath, hours, binPath)
+// -scheduled turns on the onTime check, so manual runs still ping at any hour.
+func buildCrontab(hours []int) string {
+	fields := make([]string, len(hours))
+	for i, h := range hours {
+		fields[i] = strconv.Itoa(h)
+	}
+	return fmt.Sprintf("SHELL=%s\n0 %s * * * %s -scheduled\n", binPath, strings.Join(fields, ","), binPath)
 }
 
 func main() {
@@ -52,10 +102,13 @@ func main() {
 		case "-c":
 			runShellCommand(logger, os.Args[2])
 			return
+		case "-scheduled":
+			runPing(logger, true)
+			return
 		}
 	}
 
-	runPing(logger)
+	runPing(logger, false)
 }
 
 // runInit is the container ENTRYPOINT. It regenerates the crontab from
@@ -69,14 +122,16 @@ func runInit(logger *slog.Logger, debugArgs []string) {
 		return
 	}
 
-	hours := os.Getenv("RESET_HOURS")
-	if hours == "" {
-		hours = defaultHours
+	hours, err := parseHours(resetHours())
+	if err != nil {
+		logger.Error("invalid RESET_HOURS", "error", err.Error())
+		os.Exit(1)
 	}
 	if err := os.WriteFile(crontabPath, []byte(buildCrontab(hours)), 0644); err != nil {
 		logger.Error("cannot write crontab", "path", crontabPath, "error", err.Error())
 		os.Exit(1)
 	}
+	logger.Info("crontab written", "hours", hours)
 
 	// -passthrough-logs keeps the job's JSON lines intact (otherwise they're
 	// escaped inside supercronic's own msg field); -json makes its own lines
@@ -110,8 +165,19 @@ func execOrExit(logger *slog.Logger, path string, argv []string) {
 	}
 }
 
-func runPing(logger *slog.Logger) {
-	key := time.Now().Format("2006-01-02_15")
+func runPing(logger *slog.Logger, scheduled bool) {
+	now := time.Now()
+	key := slotStart(now).Format("2006-01-02_15")
+
+	if scheduled {
+		// -init already rejected a bad RESET_HOURS; if it somehow slips
+		// through, hours is nil and the fire is skipped, never sent late.
+		hours, _ := parseHours(resetHours())
+		if !onTime(now, hours) {
+			logger.Info("skip", "slot", key, "reason", "late fire, host was probably asleep")
+			return
+		}
+	}
 
 	last, _ := os.ReadFile(stateFile)
 	if !shouldPing(string(last), key) {

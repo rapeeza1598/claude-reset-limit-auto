@@ -66,7 +66,7 @@ Container จะรันค้างไว้ (`restart: unless-stopped`) แ�
 docker compose exec claude-reset claude --version
 
 # 2. เช็คว่า .env ถูกโหลดจริง (ควรเห็น token ไม่ใช่ค่าว่าง)
-docker compose config | grep CLAUDE_CODE_OAUTH_TOKEN
+docker compose config | grep CLAUDE_CODE_OAUTH_TOKEN   # Windows: ใช้ findstr แทน grep
 
 # 3. รัน reset ด้วยมือดูก่อนว่าทำงานได้จริง
 docker compose exec claude-reset /app/reset
@@ -86,6 +86,16 @@ docker compose top
 
 ถ้าขั้นตอนที่ 3 error เรื่อง auth (เช่น token หมดอายุ/ผิด) — state file จะไม่ถูกเขียน ทำให้ครั้งถัดไปสามารถลองยิงใหม่ได้ ไม่ค้างสถานะ "สำเร็จ" ปลอมๆ
 
+## ทำให้เครื่องไม่ sleep
+
+ตารางเวลาจะทำงานได้เฉพาะตอนที่เครื่องเปิดอยู่และ Docker รันอยู่เท่านั้น เมื่อเครื่อง sleep, VM ของ Docker Desktop (บน Windows หรือ Mac) จะถูกหยุดไว้ พอเครื่องตื่น supercronic จะรีบรันงานที่พลาดไปทันที `/app/reset` จะข้ามการยิงที่ช้าเกิน 10 นาทีจากชั่วโมงที่ตั้งไว้ และ log ว่า `"reason":"late fire, host was probably asleep"` เพราะถ้ายิงช้า window 5 ชั่วโมงจะเริ่มผิดเวลา ผลคือถ้าเครื่อง sleep จะพลาดรอบนั้นไป แทนที่จะยิงตอนไหนก็ไม่รู้
+
+บน **Windows**:
+- Settings → System → Power (& battery) → ตั้ง sleep เป็น **Never** ตอนเสียบปลั๊ก
+- Docker Desktop → Settings → General → เปิด **Start Docker Desktop when you sign in** หลังรีบูต (เช่นจาก Windows Update) Docker จะเริ่มก็ต่อเมื่อมีคน sign in แล้ว
+
+บน **Mac** ให้ปิด sleep อัตโนมัติ (System Settings → Energy / Battery) และเปิด Docker Desktop ค้างไว้ หรือย้ายไปรันบนเครื่องที่เปิดตลอด (mini PC, NAS, Raspberry Pi, VPS)
+
 ## แก้ไขตารางเวลา (schedule)
 
 เวลาที่ยิงตั้งค่าผ่าน `RESET_HOURS` ใน `.env` (ไม่ได้ hardcode ไว้ใน image) — container จะ generate cron schedule จากค่านี้ทุกครั้งที่เริ่มทำงาน
@@ -103,8 +113,8 @@ docker compose restart
 ตรวจสอบว่าค่าใหม่ถูกนำไปใช้จริง:
 
 ```bash
-docker compose cp claude-reset:/app/crontab - | tar -xO
-# ควรเห็น SHELL=/app/reset และ 0 <ชั่วโมงที่ตั้งไว้> * * * /app/reset
+docker compose logs claude-reset | grep "crontab written"   # Windows: ใช้ findstr แทน grep
+# ควรเห็น "hours":[6,11,16,21] (ชั่วโมงที่ตั้งไว้) จากการ start ครั้งล่าสุด
 ```
 
 ## Log และ state file
@@ -133,6 +143,8 @@ docker compose up -d --build  # build ใหม่แล้วรันใหม
 
 ## แก้ปัญหาที่พบบ่อย (Troubleshooting)
 
+- **ใน log ขึ้น `"reason":"late fire, host was probably asleep"`** — ตอนถึงเวลาเครื่อง sleep อยู่ (หรือ Docker ไม่ได้รัน) จึงข้ามรอบนั้นไป ดูหัวข้อ "ทำให้เครื่องไม่ sleep" ด้านบน
+- **Container restart วนไม่หยุดพร้อม `invalid RESET_HOURS`** — ค่าใน `.env` ไม่ใช่ชั่วโมง 0-23 คั่นด้วย comma แก้แล้วรัน `docker compose up -d`
 - **`claude --version` ไม่เจอ binary** — install script ของ Claude Code อาจเปลี่ยนตำแหน่งติดตั้งในเวอร์ชันใหม่กว่านี้ ให้แก้บรรทัด `ENV PATH="/home/appuser/.local/bin:${PATH}"` ใน `Dockerfile` ให้ตรงกับตำแหน่งจริง แล้ว build ใหม่
 - **cron (supercronic) ยิงแต่ log ไม่มี `CLAUDE_CODE_OAUTH_TOKEN`** — ไม่ควรเกิดขึ้น เพราะ supercronic รันเป็น process ธรรมดา (ไม่ privilege-drop แบบ cron ดั้งเดิม) job ที่มันสั่งจะสืบทอด environment ของตัว container โดยตรงอยู่แล้ว ถ้าเจอปัญหานี้ให้เช็คว่า `.env` ถูกโหลดจริงด้วย `docker compose config`
 - **เวลาที่ยิงดูเลื่อนไปจากที่ตั้งไว้ (offset 7 ชั่วโมง)** — timezone ไม่ถูกต้อง ใน image ไม่มีคำสั่ง `date` ให้ดู field `time` ของบรรทัดใดก็ได้ใน `data/reset.log` หรือ `docker compose logs` แทน ควรลงท้ายด้วย `+07:00` และตรงกับเวลาไทยปัจจุบัน
