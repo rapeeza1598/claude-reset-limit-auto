@@ -2,7 +2,7 @@
 
 What was built, why each decision was made, what broke along the way, and what is still open. For how to use the service, see [README.md](../README.md). For how the code is laid out, see [CLAUDE.md](../CLAUDE.md). This file covers what neither of those explains: the reasons and the lessons.
 
-Last updated: 2026-11-18.
+Last updated: 2026-11-19.
 
 ## Timeline
 
@@ -17,9 +17,11 @@ Last updated: 2026-11-18.
 | 2026-08-25 | Weekly workflow that bumps `SUPERCRONIC_VERSION` | `b3ff56c`, `eae3775` |
 | 2026-08-26 | README made English-primary; Thai moved to `i18n/README.th.md` | `25c35fc` |
 | 2026-10-30 | Runtime moves to distroless; `entrypoint.sh` replaced by `/app/reset -init`; supercronic v0.2.51 | PR #2 (`d3314bf`) |
+| 2026-10-30 | PR #2 image deployed on the Windows host (first start 06:48) | — |
 | 2026-11-18 | This knowledge base added; `go.mod` directive moved from 1.23 to 1.27; GitHub Actions workflows (CI, supercronic bump) and the CI badge removed | PR #3 |
 | 2026-11-18 | 5-minute ping timeout; slimmer ping (`--tools ""`, `--no-session-persistence`); supercronic `-json -passthrough-logs`; CLI nonessential traffic off; `cap_drop: ALL` + `no-new-privileges`; `.dockerignore` | PR #4 |
-| 2026-11-18 | Late cron fires (host was asleep) are skipped via `/app/reset -scheduled`; `RESET_HOURS` validated; README section on keeping the (Windows) host awake | `skip-late-fires` branch |
+| 2026-11-18 | CodeQL default setup turned off (repo setting) | — |
+| 2026-11-18 | Late cron fires (host was asleep) are skipped via `/app/reset -scheduled`; fires up to 1 min early count toward the next hour; `RESET_HOURS` validated; README section on keeping the (Windows) host awake | PR #5 (`23710b6`) |
 
 ## Design decisions
 
@@ -45,7 +47,7 @@ Last updated: 2026-11-18.
 ### Distroless runtime (PR #2)
 - **Decision:** the final stage is `gcr.io/distroless/base-debian13`: glibc, libssl, CA certs, tzdata and DNS config, with no shell, package manager or coreutils.
 - **The problem it created:** supercronic runs every job as `exec.Command(shell, "-c", command)`, and `shell` defaults to `/bin/sh`, which doesn't exist in this image.
-- **The fix:** supercronic reads a `SHELL=` line from the crontab file. `/app/reset -init` writes `SHELL=/app/reset`, so each job runs as `/app/reset -c /app/reset`. `main.go` handles `-c` by splitting the command on whitespace and exec'ing it.
+- **The fix:** supercronic reads a `SHELL=` line from the crontab file. `/app/reset -init` writes `SHELL=/app/reset`, so each job runs as `/app/reset -c "/app/reset -scheduled"` (just `/app/reset -c /app/reset` before PR #5). `main.go` handles `-c` by splitting the command on whitespace and exec'ing it.
 - **`entrypoint.sh` replaced:** `-init` regenerates the crontab from `RESET_HOURS` on every start, then execs supercronic. If extra args are passed (`docker compose run … <cmd>`), it execs those instead.
 - **No `mkdir`/`chown` in the final stage:** `/app` and `/data` are created and chowned in the installer stage, then copied as whole directories. `COPY --chown` applies only to the copied files, not to parent directories it creates along the way.
 
@@ -92,7 +94,7 @@ Last updated: 2026-11-18.
 - **A sleeping host makes pings fire late.** When Docker's VM is paused (Mac or Windows asleep), supercronic runs the overdue job as soon as it wakes. Logs from 2026-09-09 to 09-27 show 9 cron fires: 5 in the wrong hour (23:10, 14:18, 12:01, 10:51, 17:08) and 1 that was 43 minutes late, with supercronic logging `job took too long to run: it should have started 65h10m45s ago`. A late ping starts the window at the wrong time and can turn the next scheduled ping into a no-op. These fires are now skipped (see "Late fires are skipped").
 - **On the Windows host, supercronic fires a few seconds early.** Logs from 2026-10-30 to 11-18 (Docker Desktop on WSL2) show most jobs starting at 05:59:58, 10:59:57, 15:59:59 or 20:59:59, at most about 3s before the hour. One ran 6s late. Two consequences in the version deployed then: the slot key came from the fire time, so an 11:00 ping was logged as slot `..._10`; and a naive "hour must be in `RESET_HOURS`" check would have skipped those pings. Both are handled by `slotStart()`. Likely cause: the WSL2 VM's clock is periodically corrected to the host's, while supercronic sleeps on the monotonic clock.
 - **The Windows host is reliable.** From the 2026-10-30 deploy to 11-18, every 06/11/16/21 slot was pinged. The container restarted five times (e.g. Docker Desktop restarts), always between slots, so no slot was lost.
-- **Local Docker builds can be slow or flaky.** This machine's network is unreliable for large layer downloads. Retry before assuming a real bug; the layer cache makes retries cheap. Docker Desktop may also need starting first (`open -a Docker`).
+- **Local Docker builds can be slow or flaky.** The Mac dev machine's network is unreliable for large layer downloads. Retry before assuming a real bug; the layer cache makes retries cheap. Docker Desktop may also need starting first (`open -a Docker`).
 
 ## Safe test recipes
 
@@ -105,24 +107,31 @@ docker compose build
 # claude resolves through PATH (tests the LookPath fix and the -init debug path)
 docker run --rm $IMG claude --version
 
-# the exact command supercronic runs on schedule; expect "ping failed" with a 401
+# the -c path into a manual ping; expect "ping failed" with a 401
 docker run --rm -e CLAUDE_CODE_OAUTH_TOKEN=bogus $IMG /app/reset -c /app/reset
 
-# full service: supercronic should log "processes will be spawned using shell: /app/reset"
+# the scheduled path at an hour not in RESET_HOURS; expect "skip" with "late fire", no API call
+docker run --rm -e CLAUDE_CODE_OAUTH_TOKEN=bogus $IMG /app/reset -c "/app/reset -scheduled"
+
+# a bad RESET_HOURS; expect "invalid RESET_HOURS" and exit code 1
+docker run --rm -e RESET_HOURS=6,25 $IMG
+
+# full service: logs are JSON; expect "crontab written" with "hours":[3]
+# and "processes will be spawned using shell: /app/reset"
 docker run -d --name crl-test -e CLAUDE_CODE_OAUTH_TOKEN=bogus -e RESET_HOURS=3 $IMG
 docker logs crl-test
-docker cp crl-test:/app/crontab - | tar -xO
+docker cp crl-test:/app/crontab - | tar -xO   # 0 3 * * * /app/reset -scheduled (Mac/Linux shell)
 docker exec crl-test /usr/local/bin/supercronic -test /app/crontab
 docker top crl-test
 docker rm -f crl-test
 ```
 
-Not yet run end to end: a real scheduled fire at minute 0. The command it runs is covered by the second recipe.
+**Real scheduled fires:** the Windows host ran the PR #2 image from 2026-10-30 to 11-18 and pinged every slot, so the scheduling path itself works in production. The PR #4/#5 behaviour (`-scheduled`, timeout, JSON logs) hasn't had a real scheduled fire yet. That happens once the Windows host is redeployed (see open items). An on-time fire can't be faked in a container here, so `TestOnTime` and `TestSlotStart` cover that logic with real fire times from both hosts.
 
-## Open items (as of 2026-11-18)
+## Open items (as of 2026-11-19)
 
+- **Redeploy the Windows host.** Its latest logs (2026-11-18) still show the PR #2 image: text logs, `job.command=/app/reset` with no `-scheduled`. In the project folder, run `git pull`, then `docker compose up -d --build`. Then confirm `docker compose logs claude-reset | findstr "crontab written"` shows `"hours":[6,11,16,21]`, and that the next 06:00 run logs `ping ok` with slot `..._06` and no `late fire`.
 - **CodeQL default setup was turned off on 2026-11-18.** It's a repo setting, not a workflow file, and it was failing on every PR while the account is locked. Once billing is fixed, turn it back on in Settings → Code security.
 - **The production host is a Windows PC (Docker Desktop on WSL2).** It must stay awake at the scheduled hours. Late fires are skipped, so sleep means missed slots, not wrong ones. See README, "Keeping the host awake".
 - **Smaller model for the ping (not done yet).** `--model haiku` is accepted by CLI 2.1.327. Confirm with one real ping at a scheduled hour that it starts the 5-hour window before switching.
 - **The OAuth token expires one year after `claude setup-token`.** Nothing renews or alerts on it (out of scope). Run `claude setup-token` again before it expires and update `.env`.
-- **`RESET_HOURS` isn't validated** (see above).
