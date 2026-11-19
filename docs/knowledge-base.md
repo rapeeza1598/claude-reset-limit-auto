@@ -22,6 +22,7 @@ Last updated: 2026-11-19.
 | 2026-11-18 | 5-minute ping timeout; slimmer ping (`--tools ""`, `--no-session-persistence`); supercronic `-json -passthrough-logs`; CLI nonessential traffic off; `cap_drop: ALL` + `no-new-privileges`; `.dockerignore` | PR #4 |
 | 2026-11-18 | CodeQL default setup turned off (repo setting) | — |
 | 2026-11-18 | Late cron fires (host was asleep) are skipped via `/app/reset -scheduled`; fires up to 1 min early count toward the next hour; `RESET_HOURS` validated; README section on keeping the (Windows) host awake | PR #5 (`23710b6`) |
+| 2026-11-19 | Ping uses `--model haiku` (`PING_MODEL` to change); docs fixed: `.env` changes need `docker compose up -d`, not `restart`; README notes Ultra has no 5-hour limit | PR #7 |
 
 ## Design decisions
 
@@ -53,13 +54,19 @@ Last updated: 2026-11-19.
 
 ### Ping hardening (2026-11-18)
 - **Timeout:** `claude -p` gets 5 minutes. supercronic never starts a job while the previous run is still going, so a hung ping would silently block every later slot. `cmd.WaitDelay` stops leftover child processes from holding `Wait` open past the timeout.
-- **Smaller ping:** `--tools ""` drops the tool definitions from the prompt, and `--no-session-persistence` skips writing a session file. The model is unchanged (see open items).
+- **Smaller ping:** `--tools ""` drops the tool definitions from the prompt, and `--no-session-persistence` skips writing a session file.
+
+### Haiku for the ping (2026-11-19)
+- **Decision:** `claude -p hi --model haiku` by default. `PING_MODEL` in `.env` overrides it, and the model is logged on every ping.
+- **Why:** support.claude.com says the 5-hour period "starts when you send your first message", with no model condition, and that weekly limits "apply across all models". Usage depends on "which Claude model you're chatting with", so the cheapest model costs the least quota.
+- **Not confirmed by docs:** no help page lists Haiku as available to Pro/Max in Claude Code (the "/model command is always the source of truth"), and none states outright that a Haiku message starts the session. The CLI binary (2.1.327) has the `haiku` alias and `claude-haiku-5-5`. Hence the env override: if haiku fails or doesn't start a session, switch back without a rebuild.
+- **Plan scope:** Max 20x became Ultra, and "Verified Ultra accounts don't have a five-hour limit". The tool only matters on Pro and Max.
 - **Logs:** supercronic runs with `-json -passthrough-logs`. Before this, its log lines were plain text and the job's JSON was escaped inside its `msg` field.
 - **Container:** `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (no autoupdater or telemetry), `cap_drop: [ALL]` and `no-new-privileges` in compose. `.dockerignore` keeps `.env` (the token), `data/` and `.git` out of the build context.
 
 ### Schedule comes from `RESET_HOURS` at runtime
 - **Decision:** the crontab is generated at container start, not baked into the image.
-- **Why:** changing the schedule needs only `docker compose restart`, with no rebuild.
+- **Why:** changing the schedule needs only `docker compose up -d`, with no rebuild. Until 2026-11-19 the docs said `docker compose restart`, which doesn't work: tested, `restart` keeps the container's original environment, and only `up -d` (which recreates it) picks up a changed `.env`.
 - **Validation:** `parseHours()` rejects anything that isn't a comma-separated list of hours 0–23, and the container exits with `invalid RESET_HOURS`. Before 2026-11-18 a bad value silently produced a broken crontab. Spaces are trimmed, and the crontab is written in normalized form.
 
 ### Late fires are skipped (2026-11-18)
@@ -133,5 +140,6 @@ docker rm -f crl-test
 - **Redeploy the Windows host.** Its latest logs (2026-11-18) still show the PR #2 image: text logs, `job.command=/app/reset` with no `-scheduled`. In the project folder, run `git pull`, then `docker compose up -d --build`. Then confirm `docker compose logs claude-reset | findstr "crontab written"` shows `"hours":[6,11,16,21]`, and that the next 06:00 run logs `ping ok` with slot `..._06` and no `late fire`.
 - **CodeQL default setup was turned off on 2026-11-18.** It's a repo setting, not a workflow file, and it was failing on every PR while the account is locked. Once billing is fixed, turn it back on in Settings → Code security.
 - **The production host is a Windows PC (Docker Desktop on WSL2).** It must stay awake at the scheduled hours. Late fires are skipped, so sleep means missed slots, not wrong ones. See README, "Keeping the host awake".
-- **Smaller model for the ping (not done yet).** `--model haiku` is accepted by CLI 2.1.327. Confirm with one real ping at a scheduled hour that it starts the 5-hour window before switching.
+- **Confirm Haiku on the first real ping.** After the Windows redeploy, the first scheduled run should log `"msg":"ping ok","model":"haiku"`, and claude.ai → Settings → Usage → Current session should show a session ending about 5 hours later. If not, set `PING_MODEL=sonnet` and run `docker compose up -d`.
+- **Which plan is the account on?** If it's Ultra (formerly Max 20x) and verified, there's no 5-hour limit and this service can be stopped.
 - **The OAuth token expires one year after `claude setup-token`.** Nothing renews or alerts on it (out of scope). Run `claude setup-token` again before it expires and update `.env`.
