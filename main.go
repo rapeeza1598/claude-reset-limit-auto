@@ -21,6 +21,7 @@ const (
 	crontabPath    = "/app/crontab"
 	supercronicBin = "/usr/local/bin/supercronic"
 	defaultHours   = "6,11,16,21"
+	defaultModel   = "haiku"
 	// supercronic never overlaps runs of a job, so a hung ping would block
 	// every later slot until the container restarts.
 	pingTimeout = 5 * time.Minute
@@ -112,7 +113,7 @@ func main() {
 }
 
 // runInit is the container ENTRYPOINT. It regenerates the crontab from
-// RESET_HOURS on every start (so `docker compose restart` applies a changed
+// RESET_HOURS on every start (so `docker compose up -d` applies a changed
 // schedule without a rebuild) and execs supercronic. Extra args (from
 // `docker compose run claude-reset <cmd>`) are exec'd directly instead, for
 // ad-hoc debugging without spinning up the real cron loop.
@@ -188,11 +189,19 @@ func runPing(logger *slog.Logger, scheduled bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
 
+	// The cheapest model is enough: any message starts the 5-hour window.
+	// PING_MODEL in .env switches it back (e.g. sonnet) without a rebuild,
+	// in case haiku isn't available on the account.
+	model := os.Getenv("PING_MODEL")
+	if model == "" {
+		model = defaultModel
+	}
+
 	start := time.Now()
 	// --tools "" and --no-session-persistence keep the ping small: no tool
 	// definitions in the prompt, no session file written. Never add --bare:
 	// it ignores CLAUDE_CODE_OAUTH_TOKEN entirely.
-	cmd := exec.CommandContext(ctx, "claude", "-p", "hi", "--tools", "", "--no-session-persistence")
+	cmd := exec.CommandContext(ctx, "claude", "-p", "hi", "--model", model, "--tools", "", "--no-session-persistence")
 	// claude may leave children holding the output pipe after a kill;
 	// don't let that stall Wait past the timeout.
 	cmd.WaitDelay = 10 * time.Second
@@ -203,11 +212,11 @@ func runPing(logger *slog.Logger, scheduled bool) {
 	}
 
 	if err != nil {
-		logger.Error("ping failed", "slot", key, "duration_ms", duration.Milliseconds(), "error", err.Error(), "output", string(output))
+		logger.Error("ping failed", "slot", key, "model", model, "duration_ms", duration.Milliseconds(), "error", err.Error(), "output", string(output))
 		os.Exit(1)
 	}
 
-	logger.Info("ping ok", "slot", key, "duration_ms", duration.Milliseconds())
+	logger.Info("ping ok", "slot", key, "model", model, "duration_ms", duration.Milliseconds())
 
 	if err := os.WriteFile(stateFile, []byte(key), 0644); err != nil {
 		logger.Error("failed to write state file", "error", err.Error())

@@ -20,7 +20,7 @@ Docker container ที่ยิง prompt สั้นๆ ไปหา Claude (
 ## ข้อกำหนดเบื้องต้น (Prerequisites)
 
 - Docker + Docker Compose
-- มี Claude Pro หรือ Max subscription และเคย `claude login` บนเครื่องที่จะรัน `claude setup-token` แล้ว (ไม่จำเป็นต้องเป็นเครื่องเดียวกับที่รัน container)
+- มี Claude Pro หรือ Max subscription (ไม่ใช่ Ultra: Max 20x ถูกย้ายเป็น Ultra แล้ว และบัญชี Ultra ที่ verify แล้วไม่มี limit 5 ชั่วโมง เครื่องมือนี้จึงไม่มีอะไรให้รีเซ็ต) และเคย `claude login` บนเครื่องที่จะรัน `claude setup-token` แล้ว (ไม่จำเป็นต้องเป็นเครื่องเดียวกับที่รัน container)
 
 ## วิธีติดตั้ง (Setup)
 
@@ -96,6 +96,12 @@ docker compose top
 
 บน **Mac** ให้ปิด sleep อัตโนมัติ (System Settings → Energy / Battery) และเปิด Docker Desktop ค้างไว้ หรือย้ายไปรันบนเครื่องที่เปิดตลอด (mini PC, NAS, Raspberry Pi, VPS)
 
+## เปลี่ยน model ที่ใช้ ping
+
+ค่าเริ่มต้นคือ `--model haiku` (ใช้ quota น้อยที่สุดต่อการ ping และข้อความใดก็เริ่ม window 5 ชั่วโมงได้) ถ้าจะเปลี่ยน ให้ตั้ง `PING_MODEL` ใน `.env` แล้วรัน `docker compose up -d` ทุกบรรทัด log ของ `ping ok` / `ping failed` จะบอก model ที่ใช้
+
+หลัง ping ตามตารางครั้งแรก ให้ตรวจว่าใช้ได้: ใน log ควรเห็น `"msg":"ping ok","model":"haiku"` และใน claude.ai → Settings → Usage → **Current session** ควรเห็น session ที่จะหมดประมาณ 5 ชั่วโมงหลังเวลาที่ตั้งไว้ ถ้า ping ล้มเพราะ model ให้ตั้ง `PING_MODEL=sonnet`
+
 ## แก้ไขตารางเวลา (schedule)
 
 เวลาที่ยิงตั้งค่าผ่าน `RESET_HOURS` ใน `.env` (ไม่ได้ hardcode ไว้ใน image) — container จะ generate cron schedule จากค่านี้ทุกครั้งที่เริ่มทำงาน
@@ -104,11 +110,13 @@ docker compose top
 RESET_HOURS=6,11,16,21
 ```
 
-แก้ค่านี้ (ใส่ชั่วโมงคั่นด้วย comma, 0-23, เวลาไทย) แล้ว restart container — **ไม่ต้อง build ใหม่**:
+แก้ค่านี้ (ใส่ชั่วโมงคั่นด้วย comma, 0-23, เวลาไทย) แล้วสร้าง container ใหม่ — **ไม่ต้อง build ใหม่**:
 
 ```bash
-docker compose restart
+docker compose up -d
 ```
+
+ใช้ `docker compose restart` ไม่ได้ เพราะมัน restart container ตัวเดิมด้วย environment เดิม และไม่อ่าน `.env` ใหม่
 
 ตรวจสอบว่าค่าใหม่ถูกนำไปใช้จริง:
 
@@ -148,7 +156,7 @@ docker compose up -d --build  # build ใหม่แล้วรันใหม
 - **`claude --version` ไม่เจอ binary** — install script ของ Claude Code อาจเปลี่ยนตำแหน่งติดตั้งในเวอร์ชันใหม่กว่านี้ ให้แก้บรรทัด `ENV PATH="/home/appuser/.local/bin:${PATH}"` ใน `Dockerfile` ให้ตรงกับตำแหน่งจริง แล้ว build ใหม่
 - **cron (supercronic) ยิงแต่ log ไม่มี `CLAUDE_CODE_OAUTH_TOKEN`** — ไม่ควรเกิดขึ้น เพราะ supercronic รันเป็น process ธรรมดา (ไม่ privilege-drop แบบ cron ดั้งเดิม) job ที่มันสั่งจะสืบทอด environment ของตัว container โดยตรงอยู่แล้ว ถ้าเจอปัญหานี้ให้เช็คว่า `.env` ถูกโหลดจริงด้วย `docker compose config`
 - **เวลาที่ยิงดูเลื่อนไปจากที่ตั้งไว้ (offset 7 ชั่วโมง)** — timezone ไม่ถูกต้อง ใน image ไม่มีคำสั่ง `date` ให้ดู field `time` ของบรรทัดใดก็ได้ใน `data/reset.log` หรือ `docker compose logs` แทน ควรลงท้ายด้วย `+07:00` และตรงกับเวลาไทยปัจจุบัน
-- **อยากทดสอบว่า cron ยิงจริงโดยไม่ต้องรอถึงเวลา** — แก้ `RESET_HOURS` ใน `.env` ชั่วคราวให้ตรงกับชั่วโมงถัดไป, `docker compose restart` (ไม่ต้อง build ใหม่), รอดู `docker compose logs -f`, แล้วอย่าลืมแก้กลับเป็น `6,11,16,21` ทีหลัง
+- **อยากทดสอบว่า cron ยิงจริงโดยไม่ต้องรอถึงเวลา** — แก้ `RESET_HOURS` ใน `.env` ชั่วคราวให้ตรงกับชั่วโมงถัดไป, `docker compose up -d` (ไม่ต้อง build ใหม่), รอดู `docker compose logs -f`, แล้วอย่าลืมแก้กลับเป็น `6,11,16,21` ทีหลัง
 
 ## สิ่งที่ตั้งใจไม่ทำ (scope ที่ตัดออก)
 

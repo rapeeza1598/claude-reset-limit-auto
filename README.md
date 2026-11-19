@@ -20,7 +20,7 @@ Before every ping, it checks whether "this hour slot" has already been pinged (v
 ## Prerequisites
 
 - Docker + Docker Compose
-- A Claude Pro or Max subscription, and `claude login` already done on the machine you'll run `claude setup-token` on (doesn't have to be the same machine that runs the container)
+- A Claude Pro or Max subscription (not Ultra: Max 20x became Ultra, and verified Ultra accounts have no 5-hour limit, so there's nothing for this tool to reset), and `claude login` already done on the machine you'll run `claude setup-token` on (doesn't have to be the same machine that runs the container)
 
 ## Setup
 
@@ -96,6 +96,12 @@ On **Windows**:
 
 On a **Mac**, turn off automatic sleep (System Settings → Energy / Battery) and keep Docker Desktop running. Or run it on an always-on machine (mini PC, NAS, Raspberry Pi, VPS).
 
+## Changing the ping model
+
+Pings use `--model haiku` by default (the least quota per ping; any message starts the 5-hour window). Set `PING_MODEL` in `.env` to change it, then run `docker compose up -d`. Every `ping ok` / `ping failed` log line includes the model.
+
+After the first scheduled ping, check that it worked: the log should show `"msg":"ping ok","model":"haiku"`, and claude.ai → Settings → Usage → **Current session** should show a session that ends about 5 hours after the scheduled hour. If pings fail with a model error, set `PING_MODEL=sonnet`.
+
 ## Changing the schedule
 
 Ping times are set via `RESET_HOURS` in `.env` (not hardcoded into the image) — the container regenerates the cron schedule from this value every time it starts.
@@ -104,11 +110,13 @@ Ping times are set via `RESET_HOURS` in `.env` (not hardcoded into the image) �
 RESET_HOURS=6,11,16,21
 ```
 
-Edit this (comma-separated hours, 0-23, Thailand time) and restart the container — **no rebuild needed**:
+Edit this (comma-separated hours, 0-23, Thailand time) and recreate the container — **no rebuild needed**:
 
 ```bash
-docker compose restart
+docker compose up -d
 ```
+
+`docker compose restart` is not enough: it restarts the same container with the old environment and doesn't re-read `.env`.
 
 Confirm the new value actually took effect:
 
@@ -148,7 +156,7 @@ docker compose up -d --build  # rebuild and rerun (e.g. after code changes)
 - **`claude --version` can't find the binary** — the Claude Code install script may have changed its install location in a newer version. Update the `ENV PATH="/home/appuser/.local/bin:${PATH}"` line in `Dockerfile` to match the real location, then rebuild.
 - **cron (supercronic) fires but the log is missing `CLAUDE_CODE_OAUTH_TOKEN`** — shouldn't happen, since supercronic runs as a plain process (no privilege-drop like traditional cron) and its jobs inherit the container's environment directly. If you hit this, confirm `.env` is actually loaded with `docker compose config`.
 - **Ping times look shifted from what you set (7-hour offset)** — wrong timezone. The image has no `date` command — check the `time` field of any line in `data/reset.log` or `docker compose logs` instead; it should end in `+07:00` and match the current time in Thailand.
-- **Want to test that cron actually fires without waiting for the scheduled hour** — temporarily set `RESET_HOURS` in `.env` to the next upcoming hour, `docker compose restart` (no rebuild needed), watch `docker compose logs -f`, then don't forget to change it back to `6,11,16,21` afterward.
+- **Want to test that cron actually fires without waiting for the scheduled hour** — temporarily set `RESET_HOURS` in `.env` to the next upcoming hour, `docker compose up -d` (no rebuild needed), watch `docker compose logs -f`, then don't forget to change it back to `6,11,16,21` afterward.
 
 ## Deliberately out of scope
 
